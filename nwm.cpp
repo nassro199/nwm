@@ -75,7 +75,7 @@ static KeyBinding keys[] = {
 };
 
 // Constructor
-WindowManager::WindowManager() 
+WindowManager::WindowManager()
     : display(nullptr), root(0), screen(0), screenWidth(0), screenHeight(0),
       currentMonitor(0), focusedClient(nullptr), running(false) {
 }
@@ -99,38 +99,51 @@ bool WindowManager::initialize() {
     root = RootWindow(display, screen);
     screenWidth = DisplayWidth(display, screen);
     screenHeight = DisplayHeight(display, screen);
-    
+
     // Check if another window manager is running
-    XSetErrorHandler([](Display*, XErrorEvent*) -> int { 
+    XSetErrorHandler([](Display*, XErrorEvent*) -> int {
         std::cerr << "nwm: another window manager is already running" << std::endl;
         exit(1);
         return 0;
     });
-    
+
     // Try to select SubstructureRedirectMask on root window
     XSelectInput(display, root, SubstructureRedirectMask | SubstructureNotifyMask);
     XSync(display, False);
-    
+
     // Set normal error handler
     XSetErrorHandler([](Display*, XErrorEvent*) -> int { return 0; });
     XSync(display, False);
-    
+
     // Initialize atoms
-    // TODO: Initialize atoms
-    
+    wmatom[0] = XInternAtom(display, "WM_PROTOCOLS", False);
+    wmatom[1] = XInternAtom(display, "WM_DELETE_WINDOW", False);
+    wmatom[2] = XInternAtom(display, "WM_STATE", False);
+    wmatom[3] = XInternAtom(display, "WM_TAKE_FOCUS", False);
+
+    netatom[0] = XInternAtom(display, "_NET_SUPPORTED", False);
+    netatom[1] = XInternAtom(display, "_NET_WM_NAME", False);
+    netatom[2] = XInternAtom(display, "_NET_WM_STATE", False);
+    netatom[3] = XInternAtom(display, "_NET_WM_CHECK", False);
+    netatom[4] = XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", False);
+    netatom[5] = XInternAtom(display, "_NET_ACTIVE_WINDOW", False);
+    netatom[6] = XInternAtom(display, "_NET_WM_WINDOW_TYPE", False);
+    netatom[7] = XInternAtom(display, "_NET_WM_WINDOW_TYPE_DIALOG", False);
+    netatom[8] = XInternAtom(display, "_NET_CLIENT_LIST", False);
+
     // Initialize cursors
     cursors[0] = XCreateFontCursor(display, XC_left_ptr);
     cursors[1] = XCreateFontCursor(display, XC_sizing);
     cursors[2] = XCreateFontCursor(display, XC_fleur);
-    
+
     // Initialize colors
     // TODO: Initialize colors
-    
+
     // Initialize layouts
     layouts.push_back(Layout("[]=" , tileLayout));
     layouts.push_back(Layout("><>", nullptr));
     layouts.push_back(Layout("[M]", monocleLayout));
-    
+
     // Initialize monitors
     // TODO: Initialize monitors with Xinerama if available
     Monitor m;
@@ -144,7 +157,7 @@ bool WindowManager::initialize() {
     m.previousLayout = LayoutType::TILED;
     m.mfact = MASTER_FACTOR;
     m.nmaster = NUM_MASTER;
-    
+
     // Initialize tags
     for (int i = 0; i < NUM_TAGS; i++) {
         Tag tag;
@@ -152,28 +165,28 @@ bool WindowManager::initialize() {
         tag.visible = (i == 0);
         m.tags.push_back(tag);
     }
-    
+
     monitors.push_back(m);
-    
+
     // Create status bar
     // TODO: Create status bar
-    
+
     // Grab keys
     grabKeys();
-    
+
     // Grab buttons
     grabButtons();
-    
+
     // Scan for existing windows
     XGrabServer(display);
     Window root_return, parent_return;
     Window* children;
     unsigned int nchildren;
-    
+
     if (XQueryTree(display, root, &root_return, &parent_return, &children, &nchildren)) {
         for (unsigned int i = 0; i < nchildren; i++) {
             XWindowAttributes wa;
-            if (XGetWindowAttributes(display, children[i], &wa) && 
+            if (XGetWindowAttributes(display, children[i], &wa) &&
                 wa.override_redirect == False && wa.map_state == IsViewable) {
                 manageClient(children[i], &wa);
             }
@@ -182,9 +195,9 @@ bool WindowManager::initialize() {
             XFree(children);
         }
     }
-    
+
     XUngrabServer(display);
-    
+
     return true;
 }
 
@@ -192,7 +205,7 @@ bool WindowManager::initialize() {
 void WindowManager::run() {
     XEvent ev;
     running = true;
-    
+
     while (running && !XNextEvent(display, &ev)) {
         if (eventHandlers[ev.type]) {
             (this->*eventHandlers[ev.type])(&ev);
@@ -211,57 +224,313 @@ void WindowManager::cleanup() {
 
 // Manage a new client window
 void WindowManager::manageClient(Window win, XWindowAttributes* wa) {
-    // TODO: Implement client management
+    // Create new client
+    auto client = std::make_unique<Client>(win);
+    Client* c = client.get();
+
+    // Set client properties
+    c->x = wa->x;
+    c->y = wa->y;
+    c->width = wa->width;
+    c->height = wa->height;
+    c->oldx = wa->x;
+    c->oldy = wa->y;
+    c->oldwidth = wa->width;
+    c->oldheight = wa->height;
+    c->bw = BORDER_PX;
+    c->mon = getCurrentMonitor();
+
+    // Update window attributes
+    XSetWindowBorder(display, win, 0);
+
+    // Update window title
+    updateTitle(c);
+
+    // Apply rules
+    applyRules(c);
+
+    // Update size hints
+    updateSizeHints(c);
+
+    // Update window type
+    updateWindowType(c);
+
+    // Update WM hints
+    updateWMHints(c);
+
+    // Map the window
+    XMapWindow(display, win);
+
+    // Add to client list
+    clients[win] = std::move(client);
+
+    // Attach to monitor
+    attachClient(c);
+
+    // Focus the client
+    focusClient(c);
+
+    // Arrange windows
+    arrange(c->mon);
 }
 
 // Unmanage a client window
 void WindowManager::unmanageClient(Client* c, bool destroyed) {
-    // TODO: Implement client unmanagement
+    if (!c) return;
+
+    Monitor* m = c->mon;
+    Window w = c->window;
+
+    // Detach client from lists
+    detachClient(c);
+
+    // If not destroyed, restore window state
+    if (!destroyed) {
+        // Restore border
+        XSetWindowBorder(display, w, 0);
+
+        // Unmap window
+        XGrabServer(display);
+        XSetErrorHandler([](Display*, XErrorEvent*) -> int { return 0; });
+        XSelectInput(display, w, NoEventMask);
+        XUngrabButton(display, AnyButton, AnyModifier, w);
+        setClientState(c, WithdrawnState);
+        XSync(display, False);
+        XSetErrorHandler([](Display*, XErrorEvent*) -> int { return 0; });
+        XUngrabServer(display);
+    }
+
+    // Remove from client map
+    clients.erase(w);
+
+    // Update focus
+    if (c == focusedClient) {
+        focusClient(nullptr);
+    }
+
+    // Update client list
+    updateClientList();
+
+    // Rearrange windows
+    arrange(m);
 }
 
 // Focus a client
 void WindowManager::focusClient(Client* c) {
-    // TODO: Implement client focusing
+    // If no client is provided, find the first visible client
+    if (!c) {
+        Monitor* m = getCurrentMonitor();
+        if (m && !m->tags[m->selectedTag].clients.empty()) {
+            for (Client* client : m->tags[m->selectedTag].clients) {
+                if (client && !client->isfloating) {
+                    c = client;
+                    break;
+                }
+            }
+
+            // If no tiled client found, use the first one
+            if (!c && !m->tags[m->selectedTag].clients.empty()) {
+                c = m->tags[m->selectedTag].clients[0];
+            }
+        }
+    }
+
+    // Unfocus current client
+    if (focusedClient && focusedClient != c) {
+        unfocusClient(focusedClient, c != nullptr);
+    }
+
+    if (c) {
+        // Set border color
+        XSetWindowBorder(display, c->window, 0xFF0000); // Red border for focused window
+
+        // Raise window
+        XRaiseWindow(display, c->window);
+
+        // Set input focus
+        if (!c->neverfocus) {
+            XSetInputFocus(display, c->window, RevertToPointerRoot, CurrentTime);
+            XChangeProperty(display, root, netatom[5], XA_WINDOW, 32,
+                           PropModeReplace, (unsigned char*)&(c->window), 1);
+        }
+
+        // Send focus event
+        sendEvent(c, wmatom[3]);
+
+        // Update focused client
+        focusedClient = c;
+    } else {
+        // Focus root window
+        XSetInputFocus(display, root, RevertToPointerRoot, CurrentTime);
+        XDeleteProperty(display, root, netatom[5]);
+        focusedClient = nullptr;
+    }
 }
 
 // Unfocus a client
 void WindowManager::unfocusClient(Client* c, bool setfocus) {
-    // TODO: Implement client unfocusing
+    if (!c) return;
+
+    // Set normal border color
+    XSetWindowBorder(display, c->window, 0x444444); // Normal border color
+
+    // Reset input focus if needed
+    if (setfocus) {
+        XSetInputFocus(display, root, RevertToPointerRoot, CurrentTime);
+        XDeleteProperty(display, root, netatom[5]);
+    }
 }
 
 // Kill a client
 void WindowManager::killClient(Client* c) {
-    // TODO: Implement client killing
+    if (!c) return;
+
+    // Try to send WM_DELETE_WINDOW message first
+    if (!sendEvent(c, wmatom[1])) {
+        // If that fails, kill the client forcefully
+        XGrabServer(display);
+        XSetErrorHandler([](Display*, XErrorEvent*) -> int { return 0; });
+        XSetCloseDownMode(display, DestroyAll);
+        XKillClient(display, c->window);
+        XSync(display, False);
+        XSetErrorHandler([](Display*, XErrorEvent*) -> int { return 0; });
+        XUngrabServer(display);
+    }
 }
 
 // Toggle floating state of a client
 void WindowManager::toggleFloating(Client* c) {
-    // TODO: Implement floating toggle
+    if (!c || c->isfixed || c->isfullscreen) return;
+
+    c->isfloating = !c->isfloating;
+
+    if (c->isfloating) {
+        // Save current position and size
+        c->oldx = c->x;
+        c->oldy = c->y;
+        c->oldwidth = c->width;
+        c->oldheight = c->height;
+
+        // Center the window
+        int x = c->mon->x + (c->mon->width - c->width) / 2;
+        int y = c->mon->y + (c->mon->height - c->height) / 2;
+
+        // Move and resize the window
+        XMoveResizeWindow(display, c->window, x, y, c->width, c->height);
+    } else {
+        // Restore old position and size
+        XMoveResizeWindow(display, c->window, c->oldx, c->oldy, c->oldwidth, c->oldheight);
+    }
+
+    // Rearrange windows
+    arrange(c->mon);
 }
 
 // Move a client
 void WindowManager::moveClient(Client* c, int x, int y) {
-    // TODO: Implement client moving
+    if (!c) return;
+
+    // Update client coordinates
+    c->x = x;
+    c->y = y;
+
+    // Move the window
+    XMoveWindow(display, c->window, x, y);
 }
 
 // Resize a client
 void WindowManager::resizeClient(Client* c, int width, int height) {
-    // TODO: Implement client resizing
+    if (!c) return;
+
+    // Update client dimensions
+    c->width = width;
+    c->height = height;
+
+    // Resize the window
+    XResizeWindow(display, c->window, width, height);
 }
 
 // Toggle fullscreen state of a client
 void WindowManager::toggleFullscreen(Client* c) {
-    // TODO: Implement fullscreen toggle
+    if (!c) return;
+
+    // Toggle fullscreen state
+    c->isfullscreen = !c->isfullscreen;
+
+    if (c->isfullscreen) {
+        // Save current state
+        c->oldstate = c->isfloating;
+        c->oldbw = c->bw;
+        c->oldx = c->x;
+        c->oldy = c->y;
+        c->oldwidth = c->width;
+        c->oldheight = c->height;
+
+        // Set fullscreen properties
+        c->bw = 0;
+        c->isfloating = 1;
+
+        // Resize to monitor size
+        XChangeProperty(display, c->window, netatom[4], XA_ATOM, 32,
+                       PropModeReplace, (unsigned char*)&netatom[4], 1);
+        XMoveResizeWindow(display, c->window, c->mon->x, c->mon->y,
+                         c->mon->width, c->mon->height);
+        XRaiseWindow(display, c->window);
+    } else {
+        // Restore previous state
+        c->isfloating = c->oldstate;
+        c->bw = c->oldbw;
+        c->x = c->oldx;
+        c->y = c->oldy;
+        c->width = c->oldwidth;
+        c->height = c->oldheight;
+
+        // Remove fullscreen property
+        XChangeProperty(display, c->window, netatom[4], XA_ATOM, 32,
+                       PropModeReplace, (unsigned char*)0, 0);
+        XMoveResizeWindow(display, c->window, c->x, c->y, c->width, c->height);
+    }
+
+    // Rearrange windows
+    arrange(c->mon);
 }
 
 // View a tag
 void WindowManager::viewTag(int tag) {
-    // TODO: Implement tag viewing
+    if (tag < 0 || tag >= NUM_TAGS) return;
+
+    Monitor* m = getCurrentMonitor();
+    if (!m) return;
+
+    // Don't do anything if the tag is already selected
+    if (m->tags[tag].visible) return;
+
+    // Save previous tag
+    m->previousTag = m->selectedTag;
+
+    // Hide windows on current tag
+    m->tags[m->selectedTag].visible = false;
+
+    // Show windows on new tag
+    m->selectedTag = tag;
+    m->tags[m->selectedTag].visible = true;
+
+    // Rearrange windows
+    arrange(m);
 }
 
 // Toggle a tag
 void WindowManager::toggleTag(int tag) {
-    // TODO: Implement tag toggling
+    if (tag < 0 || tag >= NUM_TAGS) return;
+
+    Monitor* m = getCurrentMonitor();
+    if (!m) return;
+
+    // Toggle tag visibility
+    m->tags[tag].visible = !m->tags[tag].visible;
+
+    // Rearrange windows
+    arrange(m);
 }
 
 // Tag a client
@@ -417,9 +686,9 @@ void spawn(const char** cmd) {
         if (g_windowManager && g_windowManager->display) {
             close(ConnectionNumber(g_windowManager->display));
         }
-        
+
         setsid();
-        
+
         execvp(cmd[0], const_cast<char* const*>(cmd));
         fprintf(stderr, "nwm: execvp %s failed: %s\n", cmd[0], strerror(errno));
         exit(EXIT_FAILURE);
@@ -474,25 +743,25 @@ int main(int argc, char* argv[]) {
         std::cerr << "usage: nwm [-v]" << std::endl;
         return EXIT_FAILURE;
     }
-    
+
     if (!setlocale(LC_CTYPE, "")) {
         std::cerr << "warning: no locale support" << std::endl;
     }
-    
+
     if (!(g_windowManager = new WindowManager())) {
         std::cerr << "nwm: failed to create window manager" << std::endl;
         return EXIT_FAILURE;
     }
-    
+
     if (!g_windowManager->initialize()) {
         delete g_windowManager;
         return EXIT_FAILURE;
     }
-    
+
     g_windowManager->run();
-    
+
     delete g_windowManager;
-    
+
     return EXIT_SUCCESS;
 }
 

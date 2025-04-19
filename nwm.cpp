@@ -137,7 +137,28 @@ bool WindowManager::initialize() {
     cursors[2] = XCreateFontCursor(display, XC_fleur);
 
     // Initialize colors
-    // TODO: Initialize colors
+    Colormap cmap = DefaultColormap(display, screen);
+    XftColor color;
+
+    // Normal colors
+    XftColorAllocName(display, DefaultVisual(display, screen), cmap, COLOR_FG_NORMAL, &color);
+    colors[0][0] = color; // SchemeNorm foreground
+
+    XftColorAllocName(display, DefaultVisual(display, screen), cmap, COLOR_BG_NORMAL, &color);
+    colors[0][1] = color; // SchemeNorm background
+
+    XftColorAllocName(display, DefaultVisual(display, screen), cmap, COLOR_BORDER_NORMAL, &color);
+    colors[0][2] = color; // SchemeNorm border
+
+    // Selected colors
+    XftColorAllocName(display, DefaultVisual(display, screen), cmap, COLOR_FG_SELECTED, &color);
+    colors[1][0] = color; // SchemeSel foreground
+
+    XftColorAllocName(display, DefaultVisual(display, screen), cmap, COLOR_BG_SELECTED, &color);
+    colors[1][1] = color; // SchemeSel background
+
+    XftColorAllocName(display, DefaultVisual(display, screen), cmap, COLOR_BORDER_SELECTED, &color);
+    colors[1][2] = color; // SchemeSel border
 
     // Initialize layouts
     layouts.push_back(Layout("[]=" , tileLayout));

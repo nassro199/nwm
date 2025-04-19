@@ -556,7 +556,42 @@ void WindowManager::toggleTag(int tag) {
 
 // Tag a client
 void WindowManager::tagClient(Client* c, int tag) {
-    // TODO: Implement client tagging
+    if (!c || tag < 0 || tag >= NUM_TAGS) return;
+
+    Monitor* m = c->mon;
+    if (!m) return;
+
+    // Update client's tag
+    unsigned int newTags = 1 << tag;
+
+    // Only proceed if the tags are actually changing
+    if (c->tags == newTags) return;
+
+    // Set the new tags
+    c->tags = newTags;
+
+    // Update client lists for all tags
+    for (int i = 0; i < NUM_TAGS; i++) {
+        auto& clients = m->tags[i].clients;
+
+        // Check if client should be in this tag
+        bool shouldBeInTag = (c->tags & (1 << i));
+        bool isInTag = (std::find(clients.begin(), clients.end(), c) != clients.end());
+
+        if (shouldBeInTag && !isInTag) {
+            // Add to tag
+            clients.push_back(c);
+        } else if (!shouldBeInTag && isInTag) {
+            // Remove from tag
+            auto it = std::find(clients.begin(), clients.end(), c);
+            if (it != clients.end()) {
+                clients.erase(it);
+            }
+        }
+    }
+
+    // Rearrange windows
+    arrange(m);
 }
 
 // Toggle a client's tag
